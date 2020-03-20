@@ -114,7 +114,9 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 			DropOp:  pb.Mutations_ALL,
 		},
 	}
-	groups().Node.applyMutations(ctx, &dropProposal)
+	if err := groups().Node.applyMutations(ctx, &dropProposal); err != nil {
+		return err
+	}
 
 	// Reset tablets and set correct tablets to match the restored backup.
 
@@ -122,7 +124,12 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 
 	// update timestamp.
 
-	// perform snapshot.
+	// Propose a snapshot immediately after all the work is done to prevent the restore
+	// from being replayed.
+	// TODO: is this enough to successfully trigger the snapshot?
+	if err := groups().Node.proposeSnapshot(0); err != nil {
+		return err
+	}
 
 	return nil
 }
