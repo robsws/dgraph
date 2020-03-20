@@ -25,6 +25,7 @@ import (
 	"sort"
 
 	"github.com/dgryski/go-farm"
+	"github.com/pkg/errors"
 
 	bpb "github.com/dgraph-io/badger/v2/pb"
 	"github.com/dgraph-io/dgraph/algo"
@@ -35,7 +36,7 @@ import (
 	"github.com/dgraph-io/dgraph/types"
 	"github.com/dgraph-io/dgraph/types/facets"
 	"github.com/dgraph-io/dgraph/x"
-	"github.com/pkg/errors"
+	"github.com/golang/protobuf/proto"
 )
 
 var (
@@ -74,6 +75,17 @@ type List struct {
 	mutationMap map[uint64]*pb.PostingList
 	minTs       uint64 // commit timestamp of immutable layer, reject reads before this ts.
 	maxTs       uint64 // max commit timestamp seen for this list.
+}
+
+// NewList returns a new list with an immutable layer set to plist and the
+// timestamp of the immutable layer set to minTs.
+func NewList(key []byte, plist *pb.PostingList, minTs uint64) *List {
+	return &List{
+		key:         key,
+		plist:       plist,
+		mutationMap: make(map[uint64]*pb.PostingList),
+		minTs:       minTs,
+	}
 }
 
 func (l *List) maxVersion() uint64 {
@@ -310,7 +322,7 @@ func hasDeleteAll(mpost *pb.Posting) bool {
 }
 
 // Ensure that you either abort the uncommitted postings or commit them before calling me.
-func (l *List) updateMutationLayer(mpost *pb.Posting) {
+func (l *List) updateMutationLayer(mpost *pb.Posting, singleUidUpdate bool) error {
 	l.AssertLock()
 	x.AssertTrue(mpost.Op == Set || mpost.Op == Del)
 
@@ -322,26 +334,60 @@ func (l *List) updateMutationLayer(mpost *pb.Posting) {
 			l.mutationMap = make(map[uint64]*pb.PostingList)
 		}
 		l.mutationMap[mpost.StartTs] = plist
-		return
+		return nil
 	}
+
 	plist, ok := l.mutationMap[mpost.StartTs]
 	if !ok {
-		plist := &pb.PostingList{}
-		plist.Postings = append(plist.Postings, mpost)
+		plist = &pb.PostingList{}
 		if l.mutationMap == nil {
 			l.mutationMap = make(map[uint64]*pb.PostingList)
 		}
 		l.mutationMap[mpost.StartTs] = plist
-		return
 	}
+
+	if singleUidUpdate {
+		// This handles the special case when adding a value to predicates of type uid.
+		// The current value should be deleted in favor of this value. This needs to
+		// be done because the fingerprint for the value is not math.MaxUint64 as is
+		// the case with the rest of the scalar predicates.
+		plist := &pb.PostingList{}
+		plist.Postings = append(plist.Postings, mpost)
+
+		err := l.iterate(mpost.StartTs, 0, func(obj *pb.Posting) error {
+			// Ignore values which have the same uid as they will get replaced
+			// by the current value.
+			if obj.Uid == mpost.Uid {
+				return nil
+			}
+
+			// Mark all other values as deleted. By the end of the iteration, the
+			// list of postings will contain deleted operations and only one set
+			// for the mutation stored in mpost.
+			objCopy := proto.Clone(obj).(*pb.Posting)
+			objCopy.Op = Del
+			plist.Postings = append(plist.Postings, objCopy)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// Update the mutation map with the new plist. Return here since the code below
+		// does not apply for predicates of type uid.
+		l.mutationMap[mpost.StartTs] = plist
+		return nil
+	}
+
 	// Even if we have a delete all in this transaction, we should still pick up any updates since.
 	for i, prev := range plist.Postings {
 		if prev.Uid == mpost.Uid {
 			plist.Postings[i] = mpost
-			return
+			return nil
 		}
 	}
 	plist.Postings = append(plist.Postings, mpost)
+	return nil
 }
 
 // TypeID returns the typeid of destination vertex
@@ -354,7 +400,7 @@ func TypeID(edge *pb.DirectedEdge) types.TypeID {
 
 func fingerprintEdge(t *pb.DirectedEdge) uint64 {
 	// There could be a collision if the user gives us a value with Lang = "en" and later gives
-	// us a value = "en" for the same predicate. We would end up overwritting his older lang
+	// us a value = "en" for the same predicate. We would end up overwriting his older lang
 	// value.
 
 	// All edges with a value without LANGTAG, have the same UID. In other words,
@@ -400,7 +446,21 @@ func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.Directed
 		t.ValueId = fingerprintEdge(t)
 		mpost.Uid = t.ValueId
 	}
-	l.updateMutationLayer(mpost)
+
+	// Check whether this mutation is an update for a predicate of type uid.
+	pk, err := x.Parse(l.key)
+	if err != nil {
+		return errors.Wrapf(err, "cannot parse key when adding mutation to list with key %s",
+			hex.EncodeToString(l.key))
+	}
+	pred, ok := schema.State().Get(ctx, t.Attr)
+	isSingleUidUpdate := ok && !pred.GetList() && pred.GetValueType() == pb.Posting_UID &&
+		pk.IsData() && mpost.Op == Set && mpost.PostingType == pb.Posting_REF
+
+	if err != l.updateMutationLayer(mpost, isSingleUidUpdate) {
+		return errors.Wrapf(err, "cannot update mutation layer of key %s with value %+v",
+			hex.EncodeToString(l.key), mpost)
+	}
 
 	if x.WorkerConfig.LudicrousMode {
 		return nil
@@ -410,11 +470,6 @@ func (l *List) addMutationInternal(ctx context.Context, txn *Txn, t *pb.Directed
 	// order. We can do so by proposing them in the same order as received by the Oracle delta
 	// stream from Zero, instead of in goroutines.
 	var conflictKey uint64
-	pk, err := x.Parse(l.key)
-	if err != nil {
-		return errors.Wrapf(err, "cannot parse key when adding mutation to list with key %s",
-			hex.EncodeToString(l.key))
-	}
 	switch {
 	case schema.State().HasNoConflict(t.Attr):
 		break
@@ -743,6 +798,12 @@ func (l *List) Rollup() ([]*bpb.KV, error) {
 		kvs = append(kvs, kv)
 	}
 
+	// Sort the KVs by their key so that the main part of the list is at the
+	// start of the list and all other parts appear in the order of their start UID.
+	sort.Slice(kvs, func(i, j int) bool {
+		return bytes.Compare(kvs[i].Key, kvs[j].Key) <= 0
+	})
+
 	return kvs, nil
 }
 
@@ -774,7 +835,7 @@ func (out *rollupOutput) marshalPostingListPart(
 	baseKey []byte, startUid uint64, plist *pb.PostingList) (*bpb.KV, error) {
 	kv := &bpb.KV{}
 	kv.Version = out.newMinTs
-	key, err := x.GetSplitKey(baseKey, startUid)
+	key, err := x.SplitKey(baseKey, startUid)
 	if err != nil {
 		return nil, errors.Wrapf(err,
 			"cannot generate split key for list with base key %s and start UID %d",
@@ -891,11 +952,11 @@ func (l *List) rollup(readTs uint64, split bool) (*rollupOutput, error) {
 		}
 	}
 
+	out.newMinTs = maxCommitTs
 	if split {
 		// Check if the list (or any of it's parts if it's been previously split) have
 		// become too big. Split the list if that is the case.
-		out.newMinTs = maxCommitTs
-		out.splitUpList()
+		out.recursiveSplit()
 		out.removeEmptySplits()
 	} else {
 		out.plist.Splits = nil
@@ -1057,7 +1118,10 @@ func (l *List) ValueFor(readTs uint64, langs []string) (rval types.Val, rerr err
 	l.RLock() // All public methods should acquire locks, while private ones should assert them.
 	defer l.RUnlock()
 	p, err := l.postingFor(readTs, langs)
-	if err != nil {
+	switch {
+	case err == ErrNoValue:
+		return rval, err
+	case err != nil:
 		return rval, errors.Wrapf(err, "cannot retrieve value with langs %v from list with key %s",
 			langs, hex.EncodeToString(l.key))
 	}
@@ -1191,7 +1255,6 @@ func (l *List) findPosting(readTs uint64, uid uint64) (found bool, pos *pb.Posti
 // Facets gives facets for the posting representing value.
 func (l *List) Facets(readTs uint64, param *pb.FacetParams, langs []string,
 	listType bool) ([]*pb.Facets, error) {
-
 	l.RLock()
 	defer l.RUnlock()
 
@@ -1209,7 +1272,10 @@ func (l *List) Facets(readTs uint64, param *pb.FacetParams, langs []string,
 	}
 
 	p, err := l.postingFor(readTs, langs)
-	if err != nil {
+	switch {
+	case err == ErrNoValue:
+		return nil, err
+	case err != nil:
 		return nil, errors.Wrapf(err, "cannot retrieve facet")
 	}
 	fcs = append(fcs, &pb.Facets{Facets: facets.CopyFacets(p.Facets, param)})
@@ -1217,7 +1283,7 @@ func (l *List) Facets(readTs uint64, param *pb.FacetParams, langs []string,
 }
 
 func (l *List) readListPart(startUid uint64) (*pb.PostingList, error) {
-	key, err := x.GetSplitKey(l.key, startUid)
+	key, err := x.SplitKey(l.key, startUid)
 	if err != nil {
 		return nil, errors.Wrapf(err,
 			"cannot generate key for list with base key %s and start UID %d",
@@ -1240,6 +1306,26 @@ func (l *List) readListPart(startUid uint64) (*pb.PostingList, error) {
 // shouldSplit returns true if the given plist should be split in two.
 func shouldSplit(plist *pb.PostingList) bool {
 	return plist.Size() >= maxListSize && len(plist.Pack.Blocks) > 1
+}
+
+func (out *rollupOutput) recursiveSplit() {
+	// Call splitUpList. Otherwise the map of startUids to parts won't be initialized.
+	out.splitUpList()
+
+	// Keep calling splitUpList until all the parts cannot be further split.
+	for {
+		needsSplit := false
+		for _, part := range out.parts {
+			if shouldSplit(part) {
+				needsSplit = true
+			}
+		}
+
+		if !needsSplit {
+			return
+		}
+		out.splitUpList()
+	}
 }
 
 // splitUpList checks the list and splits it in smaller parts if needed.

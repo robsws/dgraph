@@ -28,9 +28,20 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gogo/protobuf/jsonpb"
+	"github.com/golang/glog"
+	"github.com/pkg/errors"
+	ostats "go.opencensus.io/stats"
+	"go.opencensus.io/tag"
+	"go.opencensus.io/trace"
+	otrace "go.opencensus.io/trace"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
 	"github.com/dgraph-io/dgo/v2"
 	"github.com/dgraph-io/dgo/v2/protos/api"
-
 	"github.com/dgraph-io/dgraph/chunker"
 	"github.com/dgraph-io/dgraph/conn"
 	"github.com/dgraph-io/dgraph/dgraph/cmd/zero"
@@ -44,18 +55,6 @@ import (
 	"github.com/dgraph-io/dgraph/types/facets"
 	"github.com/dgraph-io/dgraph/worker"
 	"github.com/dgraph-io/dgraph/x"
-	"github.com/gogo/protobuf/jsonpb"
-	"github.com/golang/glog"
-	"github.com/pkg/errors"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
-
-	ostats "go.opencensus.io/stats"
-	"go.opencensus.io/tag"
-	"go.opencensus.io/trace"
-	otrace "go.opencensus.io/trace"
 )
 
 const (
@@ -86,6 +85,10 @@ const (
 var (
 	numGraphQLPM uint64
 	numGraphQL   uint64
+)
+
+var (
+	errIndexingInProgress = errors.New("errIndexingInProgress. Please retry")
 )
 
 // Server implements protos.DgraphServer
@@ -241,6 +244,20 @@ func (s *Server) Alter(ctx context.Context, op *api.Operation) (*api.Payload, er
 		return empty, err
 	}
 
+	// If a background task is already running, we should reject all the new alter requests.
+	const numTries = 3
+	for i := 0; i < numTries; i++ {
+		if !schema.State().IndexingInProgress() {
+			break
+		} else if i == numTries-1 {
+			return nil, errIndexingInProgress
+		}
+
+		// Let's wait a bit to see if some really simple indexing
+		// tasks can finish before we reject this request.
+		time.Sleep(time.Second)
+	}
+
 	for _, update := range result.Preds {
 		// Reserved predicates cannot be altered but let the update go through
 		// if the update is equal to the existing one.
@@ -260,6 +277,16 @@ func (s *Server) Alter(ctx context.Context, op *api.Operation) (*api.Payload, er
 	m.Schema = result.Preds
 	m.Types = result.Types
 	_, err = query.ApplyMutations(ctx, m)
+
+	// wait for indexing to complete.
+	for !op.RunInBackground {
+		if !schema.State().IndexingInProgress() {
+			break
+		}
+
+		time.Sleep(time.Second * 2)
+	}
+
 	return empty, err
 }
 

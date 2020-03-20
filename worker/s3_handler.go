@@ -109,22 +109,11 @@ func (h *s3Handler) setup(uri *url.URL) (*minio.Client, error) {
 		var provider credentials.Provider
 		switch uri.Scheme {
 		case "s3":
-			// s3:///bucket/folder
-			if !strings.Contains(uri.Host, ".") {
-				uri.Host = defaultEndpointS3
-			}
-			if !s3utils.IsAmazonEndpoint(*uri) {
-				return nil, errors.Errorf("Invalid S3 endpoint %q", uri.Host)
-			}
 			// Access Key ID:     AWS_ACCESS_KEY_ID or AWS_ACCESS_KEY.
 			// Secret Access Key: AWS_SECRET_ACCESS_KEY or AWS_SECRET_KEY.
 			// Secret Token:      AWS_SESSION_TOKEN.
 			provider = &credentials.EnvAWS{}
-
 		default: // minio
-			if uri.Host == "" {
-				return nil, errors.Errorf("Minio handler requires a host")
-			}
 			// Access Key ID:     MINIO_ACCESS_KEY.
 			// Secret Access Key: MINIO_SECRET_KEY.
 			provider = &credentials.EnvMinio{}
@@ -137,6 +126,22 @@ func (h *s3Handler) setup(uri *url.URL) (*minio.Client, error) {
 		creds.AccessKeyID = h.creds.AccessKey
 		creds.SecretAccessKey = h.creds.SecretKey
 		creds.SessionToken = h.creds.SessionToken
+	}
+
+	// Verify URI and set default S3 host if needed.
+	switch uri.Scheme {
+	case "s3":
+		// s3:///bucket/folder
+		if !strings.Contains(uri.Host, ".") {
+			uri.Host = defaultEndpointS3
+		}
+		if !s3utils.IsAmazonEndpoint(*uri) {
+			return nil, errors.Errorf("Invalid S3 endpoint %q", uri.Host)
+		}
+	default: // minio
+		if uri.Host == "" {
+			return nil, errors.Errorf("Minio handler requires a host")
+		}
 	}
 
 	secure := uri.Query().Get("secure") != "false" // secure by default

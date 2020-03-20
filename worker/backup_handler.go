@@ -103,7 +103,7 @@ func (creds *Credentials) hasCredentials() bool {
 	if creds == nil {
 		return false
 	}
-	return creds.AccessKey != "" && creds.SecretKey != ""
+	return creds.AccessKey != "" || creds.SecretKey != "" || creds.SessionToken != ""
 }
 
 func (creds *Credentials) isAnonymous() bool {

@@ -18,6 +18,7 @@ package zero
 
 import (
 	"context"
+	//	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -36,6 +37,7 @@ import (
 	"github.com/dgraph-io/badger/v2"
 	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/dgraph/conn"
+	"github.com/dgraph-io/dgraph/ee/enc"
 	"github.com/dgraph-io/dgraph/protos/pb"
 	"github.com/dgraph-io/dgraph/raftwal"
 	"github.com/dgraph-io/dgraph/x"
@@ -159,6 +161,15 @@ func (st *state) serveGRPC(l net.Listener, store *raftwal.DiskStorage) {
 }
 
 func run() {
+	x.InitSentry(enc.EeBuild)
+	defer x.FlushSentry()
+	x.ConfigureSentryScope("zero")
+	x.WrapPanics()
+
+	// Simulate a Sentry exception or panic event as shown below.
+	// x.CaptureSentryException(errors.New("zero exception"))
+	// x.Panic(errors.New("zero manual panic will send 2 events"))
+
 	x.PrintVersion()
 	opts = options{
 		bindall:           Zero.Conf.GetBool("bindall"),
@@ -197,22 +208,18 @@ func run() {
 	if len(opts.myAddr) == 0 {
 		opts.myAddr = fmt.Sprintf("localhost:%d", x.PortZeroGrpc+opts.portOffset)
 	}
+
 	grpcListener, err := setupListener(addr, x.PortZeroGrpc+opts.portOffset, "grpc")
-	if err != nil {
-		log.Fatal(err)
-	}
+	x.Check(err)
 	httpListener, err := setupListener(addr, x.PortZeroHTTP+opts.portOffset, "http")
-	if err != nil {
-		log.Fatal(err)
-	}
+	x.Check(err)
 
 	// Open raft write-ahead log and initialize raft node.
 	x.Checkf(os.MkdirAll(opts.w, 0700), "Error while creating WAL dir.")
 	kvOpt := badger.LSMOnlyOptions(opts.w).WithSyncWrites(false).WithTruncate(true).
-		WithValueLogFileSize(64 << 20).WithMaxCacheSize(10 << 20)
+		WithValueLogFileSize(64 << 20).WithMaxCacheSize(10 << 20).WithLoadBloomsOnOpen(false)
 
-	// TOOD(Ibrahim): Remove this once badger is updated.
-	kvOpt.ZSTDCompressionLevel = 1
+	kvOpt.ZSTDCompressionLevel = 3
 
 	kv, err := badger.Open(kvOpt)
 	x.Checkf(err, "Error while opening WAL store")
@@ -252,10 +259,19 @@ func run() {
 
 	// handle signals
 	go func() {
+		var sigCnt int
 		for sig := range sdCh {
 			glog.Infof("--- Received %s signal", sig)
-			signal.Stop(sdCh)
-			st.zero.closer.Signal()
+			sigCnt++
+			if sigCnt == 1 {
+				signal.Stop(sdCh)
+				st.zero.closer.Signal()
+			} else if sigCnt == 3 {
+				glog.Infof("--- Got interrupt signal 3rd time. Aborting now.")
+				os.Exit(1)
+			} else {
+				glog.Infof("--- Ignoring interrupt signal.")
+			}
 		}
 	}()
 
