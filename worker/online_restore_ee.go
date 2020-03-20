@@ -111,7 +111,7 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 		Mutations: &pb.Mutations{
 			GroupId: req.GroupId,
 			StartTs: req.RestoreTs,
-			DropOp: pb.Mutations_ALL,
+			DropOp:  pb.Mutations_ALL,
 		},
 	}
 	groups().Node.applyMutations(ctx, &dropProposal)
