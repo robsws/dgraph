@@ -106,6 +106,10 @@ func (w *grpcWorker) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.S
 }
 
 func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
+	if req == nil {
+		return errors.Errorf("nil restore request")
+	}
+
 	// Drop all the current data. This also cancels all existing transactions.
 	dropProposal := pb.Proposal{
 		Mutations: &pb.Mutations{
@@ -119,6 +123,14 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 	}
 
 	// Reset tablets and set correct tablets to match the restored backup.
+	creds := &Credentials{
+		AccessKey:    req.AccessKey,
+		SecretKey:    req.SecretKey,
+		SessionToken: req.SessionToken,
+		Anonymous:    req.Anonymous,
+	}
+	handler, err := NewUriHandler(req.Location, creds)
+	manifest, err := handler.GetLatestManifest(req.BackupId)
 
 	// stream database
 
