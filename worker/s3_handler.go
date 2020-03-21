@@ -272,10 +272,13 @@ func (h *s3Handler) readManifest(mc *minio.Client, object string, m *Manifest) e
 	return json.NewDecoder(reader).Decode(m)
 }
 
-func (h *s3Handler) getManifests(
-	uri *url.URL, mc *minio.Client, backupId string) ([]*Manifest, error) {
-	var paths []string
+func (h *s3Handler) GetManifests(uri *url.URL, backupId string) ([]*Manifest, error) {
+	mc, err := h.setup(uri)
+	if err != nil {
+		return nil, err
+	}
 
+	var paths []string
 	doneCh := make(chan struct{})
 	defer close(doneCh)
 
@@ -304,11 +307,16 @@ func (h *s3Handler) getManifests(
 		m.Path = path
 		manifests = append(manifests, &m)
 	}
-	var err error
 	manifests, err = filterManifests(manifests, backupId)
 	if err != nil {
 		return nil, err
 	}
+
+	// Sort manifests in the ascending order of their BackupNum so that the first
+	// manifest corresponds to the first full backup and so on.
+	sort.Slice(manifests, func(i, j int) bool {
+		return manifests[i].BackupNum < manifests[j].BackupNum
+	})
 	return manifests, nil
 }
 
@@ -316,14 +324,14 @@ func (h *s3Handler) getManifests(
 // load any backup objects found.
 // Returns nil and the maximum Since value on success, error otherwise.
 func (h *s3Handler) Load(uri *url.URL, backupId string, fn loadFn) LoadResult {
+	manifests, err := h.GetManifests(uri, backupId)
+	if err != nil {
+		return LoadResult{0, 0, errors.Wrapf(err, "while retrieving manifests")}
+	}
+
 	mc, err := h.setup(uri)
 	if err != nil {
 		return LoadResult{0, 0, err}
-	}
-
-	manifests, err := h.getManifests(uri, mc, backupId)
-	if err != nil {
-		return LoadResult{0, 0, errors.Wrapf(err, "while retrieving manifests")}
 	}
 
 	// since is returned with the max manifest Since value found.
@@ -381,12 +389,7 @@ func (h *s3Handler) Load(uri *url.URL, backupId string, fn loadFn) LoadResult {
 // Verify performs basic checks to decide whether the specified backup can be restored
 // to a live cluster.
 func (h *s3Handler) Verify(uri *url.URL, backupId string, currentGroups []uint32) error {
-	mc, err := h.setup(uri)
-	if err != nil {
-		return err
-	}
-
-	manifests, err := h.getManifests(uri, mc, backupId)
+	manifests, err := h.GetManifests(uri, backupId)
 	if err != nil {
 		return errors.Wrapf(err, "while retrieving manifests")
 	}

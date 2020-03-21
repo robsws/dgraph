@@ -109,7 +109,7 @@ func (h *fileHandler) CreateManifest(uri *url.URL, req *pb.BackupRequest) error 
 	return h.createFiles(uri, req, backupManifest)
 }
 
-func (h *fileHandler) getManifests(uri *url.URL, backupId string) ([]*Manifest, error) {
+func (h *fileHandler) GetManifests(uri *url.URL, backupId string) ([]*Manifest, error) {
 	if !pathExist(uri.Path) {
 		return nil, errors.Errorf("The path %q does not exist or it is inaccessible.", uri.Path)
 	}
@@ -148,7 +148,7 @@ func (h *fileHandler) getManifests(uri *url.URL, backupId string) ([]*Manifest, 
 // Load uses tries to load any backup files found.
 // Returns the maximum value of Since on success, error otherwise.
 func (h *fileHandler) Load(uri *url.URL, backupId string, fn loadFn) LoadResult {
-	manifests, err := h.getManifests(uri, backupId)
+	manifests, err := h.GetManifests(uri, backupId)
 	if err != nil {
 		return LoadResult{0, 0, errors.Wrapf(err, "cannot retrieve manifests")}
 	}
@@ -196,7 +196,7 @@ func (h *fileHandler) Load(uri *url.URL, backupId string, fn loadFn) LoadResult 
 // Verify performs basic checks to decide whether the specified backup can be restored
 // to a live cluster.
 func (h *fileHandler) Verify(uri *url.URL, backupId string, currentGroups []uint32) error {
-	manifests, err := h.getManifests(uri, backupId)
+	manifests, err := h.GetManifests(uri, backupId)
 	if err != nil {
 		return errors.Wrapf(err, "while retrieving manifests")
 	}

@@ -59,6 +59,10 @@ type UriHandler interface {
 	// These function calls are used by both Create and Load.
 	io.WriteCloser
 
+	// GetManfiest returns the list of manfiests for the given backup series ID
+	// at the specified location.
+	GetManifests(*url.URL, string) ([]*Manifest, error)
+
 	// GetLatestManifest reads the manifests at the given URL and returns the
 	// latest manifest.
 	GetLatestManifest(*url.URL) (*Manifest, error)

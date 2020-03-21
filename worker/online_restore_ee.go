@@ -14,6 +14,7 @@ package worker
 
 import (
 	"context"
+	"net/url"
 
 	"github.com/dgraph-io/dgraph/conn"
 	"github.com/dgraph-io/dgraph/posting"
@@ -122,6 +123,17 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 		return err
 	}
 
+	// Remove current tablets.
+	if err := UpdateMembershipState(ctx); err != nil {
+		return errors.Errorf("cannot update membership state")
+	}
+	ms := GetMembershipState()
+	if gs, ok := ms.GetGroups()[req.GroupId]; ok {
+		for _, tablet := range gs.GetTablets() {
+			// TODO: how to correctly delete the tablet?
+		}
+	}
+
 	// Reset tablets and set correct tablets to match the restored backup.
 	creds := &Credentials{
 		AccessKey:    req.AccessKey,
@@ -129,8 +141,28 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 		SessionToken: req.SessionToken,
 		Anonymous:    req.Anonymous,
 	}
-	handler, err := NewUriHandler(req.Location, creds)
-	manifest, err := handler.GetLatestManifest(req.BackupId)
+	uri, err := url.Parse(req.Location)
+	if err != nil {
+		return err
+	}
+	handler, err := NewUriHandler(uri, creds)
+	manifests, err := handler.GetManifests(uri, req.BackupId)
+	if len(manifests) == 0 {
+		return errors.Errorf("no backup manifests found at location %s", req.Location)
+	}
+	lastManifest := manifests[len(manifests)-1]
+	preds, ok := lastManifest.Groups[req.GroupId]
+	if !ok {
+		return errors.Errorf("backup manifest does not contain information for group ID %d",
+			req.GroupId)
+	}
+	for _, pred := range preds {
+		if tablet, err := groups().Tablet(pred); err != nil {
+			return errors.Wrapf(err, "cannot create tablet for restored predicate %s", pred)
+		} else if tablet.GetGroupId() != req.GroupId {
+			return errors.Errorf("cannot assign tablet for pred %s to group %s", pred, req.GroupId)
+		}
+	}
 
 	// stream database
 
