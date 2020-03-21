@@ -170,7 +170,7 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 	if err := writeBackup(ctx, req); err != nil {
 		return errors.Wrapf(err, "cannot write backup")
 	}
-	
+
 	// update timestamp.
 
 	// Propose a snapshot immediately after all the work is done to prevent the restore
