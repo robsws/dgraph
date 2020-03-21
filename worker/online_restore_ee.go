@@ -13,7 +13,9 @@
 package worker
 
 import (
+	"compress/gzip"
 	"context"
+	"io"
 	"net/url"
 
 	"github.com/dgraph-io/dgraph/conn"
@@ -165,7 +167,10 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 	}
 
 	// stream database
-
+	if err := writeBackup(ctx, req); err != nil {
+		return errors.Wrapf(err, "cannot write backup")
+	}
+	
 	// update timestamp.
 
 	// Propose a snapshot immediately after all the work is done to prevent the restore
@@ -176,4 +181,21 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 	}
 
 	return nil
+}
+
+func writeBackup(ctx context.Context, req *pb.RestoreRequest) error {
+	res := LoadBackup(req.Location, req.BackupId,
+		func(r io.Reader, groupId int, preds predicateSet) (uint64, error) {
+			gzReader, err := gzip.NewReader(r)
+			if err != nil {
+				return 0, nil
+			}
+			maxUid, err := loadFromBackup(pstore, gzReader, preds)
+			if err != nil {
+				return 0, err
+			}
+
+			return maxUid, nil
+		})
+	return res.Err
 }
