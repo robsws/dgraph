@@ -166,12 +166,10 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 		}
 	}
 
-	// stream database
+	// Write restored values to disk and update the UID lease.
 	if err := writeBackup(ctx, req); err != nil {
 		return errors.Wrapf(err, "cannot write backup")
 	}
-
-	// update timestamp.
 
 	// Propose a snapshot immediately after all the work is done to prevent the restore
 	// from being replayed.
@@ -188,13 +186,28 @@ func writeBackup(ctx context.Context, req *pb.RestoreRequest) error {
 		func(r io.Reader, groupId int, preds predicateSet) (uint64, error) {
 			gzReader, err := gzip.NewReader(r)
 			if err != nil {
-				return 0, nil
+				return 0, err
 			}
+
 			maxUid, err := loadFromBackup(pstore, gzReader, req.RestoreTs, preds)
 			if err != nil {
 				return 0, err
 			}
 
+			// Use the value of maxUid to update the uid lease.
+			pl := groups().connToZeroLeader()
+			if pl == nil {
+				return 0, errors.Errorf(
+					"cannot update uid lease due to no connection to zero leader")
+			}
+			zc := pb.NewZeroClient(pl.Get())
+			_, err = zc.AssignUids(ctx, &pb.Num{Val: maxUid})
+			if err != nil {
+				return 0, err
+			}
+
+			// We return the maxUid to enforce the signature of the method but it will
+			// be ignored as the uid lease was updated above.
 			return maxUid, nil
 		})
 	return res.Err
