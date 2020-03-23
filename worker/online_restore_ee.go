@@ -125,16 +125,16 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest) error {
 		return err
 	}
 
-	// Remove current tablets.
-	if err := UpdateMembershipState(ctx); err != nil {
-		return errors.Errorf("cannot update membership state")
-	}
-	ms := GetMembershipState()
-	if gs, ok := ms.GetGroups()[req.GroupId]; ok {
-		for _, tablet := range gs.GetTablets() {
-			// TODO: how to correctly delete the tablet?
-		}
-	}
+	// // Remove current tablets.
+	// if err := UpdateMembershipState(ctx); err != nil {
+	// 	return errors.Errorf("cannot update membership state")
+	// }
+	// ms := GetMembershipState()
+	// if gs, ok := ms.GetGroups()[req.GroupId]; ok {
+	// 	for _, tablet := range gs.GetTablets() {
+	// 		// TODO: how to correctly delete the tablet?
+	// 	}
+	// }
 
 	// Reset tablets and set correct tablets to match the restored backup.
 	creds := &Credentials{
@@ -190,7 +190,7 @@ func writeBackup(ctx context.Context, req *pb.RestoreRequest) error {
 			if err != nil {
 				return 0, nil
 			}
-			maxUid, err := loadFromBackup(pstore, gzReader, preds)
+			maxUid, err := loadFromBackup(pstore, gzReader, req.RestoreTs, preds)
 			if err != nil {
 				return 0, err
 			}

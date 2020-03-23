@@ -63,7 +63,7 @@ func RunRestore(pdir, location, backupId string) LoadResult {
 			if err != nil {
 				return 0, nil
 			}
-			maxUid, err := loadFromBackup(db, gzReader, preds)
+			maxUid, err := loadFromBackup(db, gzReader, 0, preds)
 			if err != nil {
 				return 0, err
 			}
@@ -75,7 +75,9 @@ func RunRestore(pdir, location, backupId string) LoadResult {
 // loadFromBackup reads the backup, converts the keys and values to the required format,
 // and loads them to the given badger DB. The set of predicates is used to avoid restoring
 // values from predicates no longer assigned to this group.
-func loadFromBackup(db *badger.DB, r io.Reader, preds predicateSet) (uint64, error) {
+// If ts is greater than zero, the key-value pairs will be written with that timestamp.
+// Otherwise, the original value is used.
+func loadFromBackup(db *badger.DB, r io.Reader, ts uint64, preds predicateSet) (uint64, error) {
 	br := bufio.NewReaderSize(r, 16<<10)
 	unmarshalBuf := make([]byte, 1<<10)
 
@@ -128,6 +130,11 @@ func loadFromBackup(db *badger.DB, r io.Reader, preds predicateSet) (uint64, err
 			// Update the max id that has been seen while restoring this backup.
 			if parsedKey.Uid > maxUid {
 				maxUid = parsedKey.Uid
+			}
+
+			// Override the version if requested.
+			if ts > 0 {
+				kv.Version = ts
 			}
 
 			switch kv.GetUserMeta()[0] {
