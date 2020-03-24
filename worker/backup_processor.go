@@ -135,6 +135,11 @@ func (pr *BackupProcessor) WriteBackup(ctx context.Context) (*pb.Status, error) 
 			return false
 		}
 
+		// TODO: remove this after real fix is merged.
+		if parsedKey.HasStartUid {
+			return false
+		}
+
 		// Backup type keys in every group.
 		if parsedKey.IsType() {
 			return true
