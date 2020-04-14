@@ -400,6 +400,24 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			}
 
 			vals, fcs, err := retrieveValuesAndFacets(args, pl, facetsTree, listType)
+			if q.AttrFacet != "" {
+				// replace values with specified facet values
+				var facetVals []types.Val
+				for i := range vals {
+					facetsForVal := fcs.GetFacetsList()[i]
+					for _, facet := range facetsForVal.GetFacets() {
+						if facet.Key == q.AttrFacet {
+							facetAsVal := types.Val{Tid: types.BinaryID, Value: facet.Value}
+							facetVals = append(facetVals, facetAsVal)
+							break
+						}
+					}
+					// If no facet with that name was found for the value,
+					// it has the effect of filtering it out of the results.
+				}
+				vals = facetVals
+			}
+
 			switch {
 			case err == posting.ErrNoValue || (err == nil && len(vals) == 0):
 				// This branch is taken when the value does not exist in the pl or
@@ -593,6 +611,16 @@ func retrieveValuesAndFacets(args funcArgs, pl *posting.List, facetsTree *facets
 		})
 		if q.FacetParam != nil {
 			fcs = append(fcs, &pb.Facets{Facets: facets.CopyFacets(p.Facets, q.FacetParam)})
+		}
+		if q.AttrFacet != "" {
+			var facet *api.Facet = nil
+			for _, f := range p.Facets {
+				if f.Key == q.AttrFacet {
+					facet = f
+					break
+				}
+			}
+			fcs = append(fcs, &pb.Facets{Facets: []*api.Facet{facets.CopyFacet(facet, "")}})
 		}
 	})
 	if err != nil {

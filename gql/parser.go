@@ -47,6 +47,7 @@ var (
 type GraphQuery struct {
 	UID        []uint64
 	Attr       string
+	AttrFacet  string
 	Langs      []string
 	Alias      string
 	IsCount    bool
@@ -173,6 +174,7 @@ type Arg struct {
 // Function holds the information about gql functions.
 type Function struct {
 	Attr       string
+	AttrFacet  string
 	Lang       string // language of the attribute value
 	Name       string // Specifies the name of the function.
 	Args       []Arg  // Contains the arguments of the function.
@@ -1837,7 +1839,15 @@ L:
 					return nil, itemInFunc.Errorf("Attribute in function"+
 						" must not be quoted with \": %s", itemInFunc.Val)
 				}
+				// Check if user specified a facet
+				facet := ""
+				valParts := strings.Split(val, ".")
+				if len(valParts) == 2 {
+					val = valParts[0]
+					facet = valParts[1]
+				}
 				function.Attr = val
+				function.AttrFacet = facet
 				attrItemsAgo = 0
 			case expectLang:
 				if val == "*" {
@@ -2863,6 +2873,14 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 
 			val := collectName(it, item.Val)
 			valLower := strings.ToLower(val)
+			facet := ""
+
+			// Check if user specified a facet
+			valParts := strings.Split(val, ".")
+			if len(valParts) == 2 {
+				val = valParts[0]
+				facet = valParts[1]
+			}
 
 			peekIt, err = it.Peek(1)
 			if err != nil {
@@ -3125,11 +3143,12 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 				return it.Errorf("Multiple predicates not allowed in single count.")
 			}
 			child := &GraphQuery{
-				Args:    make(map[string]string),
-				Attr:    val,
-				IsCount: count == seen,
-				Var:     varName,
-				Alias:   alias,
+				Args:      make(map[string]string),
+				Attr:      val,
+				AttrFacet: facet,
+				IsCount:   count == seen,
+				Var:       varName,
+				Alias:     alias,
 			}
 
 			if gq.IsCount {

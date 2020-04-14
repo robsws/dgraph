@@ -217,9 +217,12 @@ type Function struct {
 // SubGraph is the way to represent data. It contains both the request parameters and the response.
 // Once generated, this can then be encoded to other client convenient formats, like GraphQL / JSON.
 type SubGraph struct {
-	ReadTs      uint64
-	Cache       int
-	Attr        string
+	ReadTs uint64
+	Cache  int
+	Attr   string
+	// Set to the facet of Attr that the user wants specifically
+	// using the "attr.facet" notation.
+	AttrFacet   string
 	UnknownAttr bool
 	// read only parameters which are populated before the execution of the query and are used to
 	// execute this query.
@@ -421,6 +424,7 @@ func filterCopy(sg *SubGraph, ft *gql.FilterTree) error {
 		sg.FilterOp = ft.Op
 	} else {
 		sg.Attr = ft.Func.Attr
+		sg.AttrFacet = ft.Func.AttrFacet
 		if !isValidFuncName(ft.Func.Name) {
 			return errors.Errorf("Invalid function name: %s", ft.Func.Name)
 		}
@@ -550,8 +554,9 @@ func treeCopy(gq *gql.GraphQuery, sg *SubGraph) error {
 		}
 
 		dst := &SubGraph{
-			Attr:   gchild.Attr,
-			Params: args,
+			Attr:      gchild.Attr,
+			AttrFacet: gchild.AttrFacet,
+			Params:    args,
 		}
 		if gchild.MathExp != nil {
 			mathExp := &mathTree{}
@@ -875,6 +880,7 @@ func createTaskQuery(sg *SubGraph) (*pb.Query, error) {
 		FacetsFilter: sg.facetsFilter,
 		ExpandAll:    sg.Params.ExpandAll,
 		First:        first,
+		AttrFacet:    sg.AttrFacet,
 	}
 
 	if sg.SrcUIDs != nil {
