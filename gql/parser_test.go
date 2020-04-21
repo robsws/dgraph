@@ -949,7 +949,7 @@ func TestParseQueryFilterError1B(t *testing.T) {
 `
 	_, err := Parse(Request{Str: query})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Expected comma or language but got: \"alice\"")
+	require.Contains(t, err.Error(), "Expected comma, language or 'facets' but got: \"alice\"")
 }
 
 func TestParseQueryFilterError2(t *testing.T) {
@@ -962,7 +962,7 @@ func TestParseQueryFilterError2(t *testing.T) {
 `
 	_, err := Parse(Request{Str: query})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Expected comma or language but got: \"alice\"")
+	require.Contains(t, err.Error(), "Expected comma, language or 'facets' but got: \"alice\"")
 }
 
 func TestParseQueryWithVarAtRootFilterID(t *testing.T) {
@@ -2302,7 +2302,7 @@ func TestParseFilter_opError1(t *testing.T) {
 `
 	_, err := Parse(Request{Str: query})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Expected comma or language but got: \"aaa\"")
+	require.Contains(t, err.Error(), "Expected comma, language or 'facets' but got: \"aaa\"")
 }
 
 func TestParseFilter_opNoError2(t *testing.T) {
@@ -3978,7 +3978,7 @@ func TestParseRegexp4(t *testing.T) {
 	_, err := Parse(Request{Str: query})
 	// only [a-zA-Z] characters can be used as flags
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Expected comma or language but got: 123")
+	require.Contains(t, err.Error(), "Expected comma, language or 'facets' but got: 123")
 }
 
 func TestParseRegexp5(t *testing.T) {
@@ -3992,7 +3992,7 @@ func TestParseRegexp5(t *testing.T) {
 	_, err := Parse(Request{Str: query})
 	// only [a-zA-Z] characters can be used as flags
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Expected comma or language but got: 123")
+	require.Contains(t, err.Error(), "Expected comma, language or 'facets' but got: 123")
 }
 
 func TestParseRegexp6(t *testing.T) {
@@ -5237,4 +5237,60 @@ func TestFilterWithEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, gq.Query[0].Filter.Func.Args[0].Value, "")
+}
+
+func TestFilterWithFacetTopLevel(t *testing.T) {
+	query := `{
+		names(func: has(name)) @filter(gt(name @facets(since), "2020-01-01")) {
+		  count(uid)
+		}
+	  }`
+	gq, err := Parse(Request{
+		Str: query,
+	})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].Filter.Func.Attr, "name")
+	require.Equal(t, gq.Query[0].Filter.Func.AttrFacet, "since")
+}
+
+func TestFilterWithFacetSubLevel(t *testing.T) {
+	query := `{
+		names(func: has(name)) {
+		  name @filter(gt(name @facets(since), "2020-01-01"))
+		}
+	  }`
+	gq, err := Parse(Request{
+		Str: query,
+	})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].Children[0].Filter.Func.Attr, "name")
+	require.Equal(t, gq.Query[0].Children[0].Filter.Func.AttrFacet, "since")
+}
+
+func TestFilterWithFacetOfIRI(t *testing.T) {
+	query := `{
+		names(func: has(name)) @filter(gt(<http://verygood.com/what/about/you> @facets(since), "2020-01-01")) {
+		  count(uid)
+		}
+	  }`
+	gq, err := Parse(Request{
+		Str: query,
+	})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].Filter.Func.Attr, "http://verygood.com/what/about/you")
+	require.Equal(t, gq.Query[0].Filter.Func.AttrFacet, "since")
+}
+
+func TestFilterWithIRIFacetOfIRI(t *testing.T) {
+	query := `{
+		names(func: has(name)) @filter(eq(<http://verygood.com/what/about/you> @facets(<http://good.com/thanks>), 34)) {
+		  count(uid)
+		}
+	  }`
+	gq, err := Parse(Request{
+		Str: query,
+	})
+	require.NoError(t, err)
+	require.Equal(t, gq.Query[0].Filter.Func.Attr, "http://verygood.com/what/about/you")
+	require.Equal(t, gq.Query[0].Filter.Func.AttrFacet, "http://good.com/thanks")
 }

@@ -1648,7 +1648,7 @@ func parseRegexArgs(val string) (regexArgs, error) {
 
 func parseFunction(it *lex.ItemIterator, gq *GraphQuery) (*Function, error) {
 	function := &Function{}
-	var expectArg, seenFuncArg, expectLang, isDollar bool
+	var expectArg, seenFuncArg, expectLangOrFacets, isDollar bool
 L:
 	for it.Next() {
 		item := it.Item()
@@ -1738,7 +1738,7 @@ L:
 					return nil, itemInFunc.Errorf("Invalid usage of '@' in function " +
 						"argument, must only appear immediately after attr.")
 				}
-				expectLang = true
+				expectLangOrFacets = true
 				continue
 			case itemMathOp:
 				val = itemInFunc.Val
@@ -1795,12 +1795,13 @@ L:
 				return nil, item.Errorf("Unexpected item: %v", item)
 			}
 			// Part of function continue
-			if item.Typ == itemLeftRound {
+			// Exclude edge@facets(facet) case
+			if item.Typ == itemLeftRound && !expectLangOrFacets {
 				continue
 			}
 
-			if !expectArg && !expectLang {
-				return nil, itemInFunc.Errorf("Expected comma or language but got: %s",
+			if !expectArg && !expectLangOrFacets {
+				return nil, itemInFunc.Errorf("Expected comma, language or 'facets' but got: %s",
 					itemInFunc.Val)
 			}
 
@@ -1839,23 +1840,31 @@ L:
 					return nil, itemInFunc.Errorf("Attribute in function"+
 						" must not be quoted with \": %s", itemInFunc.Val)
 				}
-				// Check if user specified a facet
-				facet := ""
-				valParts := strings.Split(val, ".")
-				if len(valParts) == 2 {
-					val = valParts[0]
-					facet = valParts[1]
-				}
 				function.Attr = val
-				function.AttrFacet = facet
 				attrItemsAgo = 0
-			case expectLang:
+			case expectLangOrFacets:
 				if val == "*" {
 					return nil, errors.Errorf(
 						"The * symbol cannot be used as a valid language inside functions")
 				}
-				function.Lang = val
-				expectLang = false
+				if val == "facets" {
+					// User specified that a facet value should be returned for this attr
+					it.Next()
+					if it.Item().Typ != itemLeftRound {
+						return nil, errors.Errorf(
+							"Exactly one argument must be passed to @facets when inside function arguments.")
+					}
+					it.Next()
+					function.AttrFacet = collectName(it, it.Item().Val)
+					it.Next()
+					if it.Item().Typ != itemRightRound {
+						return nil, errors.Errorf(
+							"Exactly one argument must be passed to @facets when inside function arguments.")
+					}
+				} else {
+					function.Lang = val
+				}
+				expectLangOrFacets = false
 			case function.Name != uidFunc:
 				// For UID function. we set g.UID
 				function.Args = append(function.Args, Arg{Value: val})
@@ -2873,14 +2882,6 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 
 			val := collectName(it, item.Val)
 			valLower := strings.ToLower(val)
-			facet := ""
-
-			// Check if user specified a facet
-			valParts := strings.Split(val, ".")
-			if len(valParts) == 2 {
-				val = valParts[0]
-				facet = valParts[1]
-			}
 
 			peekIt, err = it.Peek(1)
 			if err != nil {
@@ -3143,12 +3144,11 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 				return it.Errorf("Multiple predicates not allowed in single count.")
 			}
 			child := &GraphQuery{
-				Args:      make(map[string]string),
-				Attr:      val,
-				AttrFacet: facet,
-				IsCount:   count == seen,
-				Var:       varName,
-				Alias:     alias,
+				Args:    make(map[string]string),
+				Attr:    val,
+				IsCount: count == seen,
+				Var:     varName,
+				Alias:   alias,
 			}
 
 			if gq.IsCount {
