@@ -407,7 +407,10 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 					facetsForVal := fcs.GetFacetsList()[i]
 					for _, facet := range facetsForVal.GetFacets() {
 						if facet.Key == q.AttrFacet {
-							facetAsVal := types.Val{Tid: types.BinaryID, Value: facet.Value}
+							facetAsVal, err := facets.ValFor(facet)
+							if err != nil {
+								return err
+							}
 							facetVals = append(facetVals, facetAsVal)
 							break
 						}
@@ -448,23 +451,32 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			uidList := new(pb.List)
 			var vl pb.ValueList
 			for _, val := range vals {
-				newValue, err := convertToType(val, srcFn.atype)
-				if err != nil {
-					return err
-				}
-
 				// This means we fetched the value directly instead of fetching index key and
 				// intersecting. Lets compare the value and add filter the uid.
 				if srcFn.fnType == compareAttrFn {
-					// Lets convert the val to its type.
-					if val, err = types.Convert(val, srcFn.atype); err != nil {
-						return err
+					// In facet comparison case, type of ineqValue could not be
+					// inferred at parse time, so we get it from the facet value now.
+					ineqValue := srcFn.ineqValue
+					if q.AttrFacet != "" {
+						// Convert the fn arg to the facet type.
+						if ineqValue, err = types.Convert(ineqValue, val.Tid); err != nil {
+							return err
+						}
+					} else {
+						// Convert the val to its type.
+						if val, err = types.Convert(val, srcFn.atype); err != nil {
+							return err
+						}
 					}
-					if types.CompareVals(srcFn.fname, val, srcFn.ineqValue) {
+					if types.CompareVals(srcFn.fname, val, ineqValue) {
 						uidList.Uids = append(uidList.Uids, q.UidList.Uids[i])
 						break
 					}
 				} else {
+					newValue, err := convertToType(val, srcFn.atype)
+					if err != nil {
+						return err
+					}
 					vl.Values = append(vl.Values, newValue)
 				}
 			}
@@ -954,7 +966,7 @@ func (qs *queryState) helpProcessTask(ctx context.Context, q *pb.Query, gid uint
 	}
 
 	typ, err := schema.State().TypeOf(attr)
-	if err != nil {
+	if err != nil || q.AttrFacet != "" {
 		// All schema checks are done before this, this type is only used to
 		// convert it to schema type before returning.
 		// Schema type won't be present only if there is no data for that predicate
@@ -1654,12 +1666,15 @@ func parseSrcFn(ctx context.Context, q *pb.Query) (*functionContext, error) {
 	fnType, f := parseFuncType(q.SrcFunc)
 	attr := q.Attr
 	fc := &functionContext{fnType: fnType, fname: f}
-	isIndexedAttr := schema.State().IsIndexed(ctx, attr)
+	// Facets are not indexed
+	isIndexedAttr := q.AttrFacet == "" && schema.State().IsIndexed(ctx, attr)
 	var err error
 
-	t, err := schema.State().TypeOf(attr)
-	if err == nil && fnType != notAFunction && t.Name() == types.StringID.Name() {
-		fc.isStringFn = true
+	if q.AttrFacet == "" {
+		t, err := schema.State().TypeOf(attr)
+		if err == nil && fnType != notAFunction && t.Name() == types.StringID.Name() {
+			fc.isStringFn = true
+		}
 	}
 
 	switch fnType {
@@ -1693,13 +1708,20 @@ func parseSrcFn(ctx context.Context, q *pb.Query) (*functionContext, error) {
 		var tokens []string
 		// eq can have multiple args.
 		for _, arg := range args {
+			// First handle case where facet is asked for.
+			if q.AttrFacet != "" {
+				// Type cannot be inferred until we look at the data.
+				// Store as a string for now.
+				fc.ineqValue = types.Val{Tid: types.StringID, Value: []byte(arg)}
+				continue
+			}
 			if fc.ineqValue, err = convertValue(attr, arg); err != nil {
 				return nil, errors.Errorf("Got error: %v while running: %v", err,
 					q.SrcFunc)
 			}
 			fc.eqTokens = append(fc.eqTokens, fc.ineqValue)
 			if !isIndexedAttr {
-				// In case of non-indexed predicate we won't have any tokens.
+				// In case of non-indexed predicate (or a facet) we won't have any tokens.
 				continue
 			}
 
