@@ -25,7 +25,7 @@ syntax = "proto3";
 package pb;
 
 import "api.proto";
-import "github.com/dgraph-io/badger/v2/pb/pb.proto";
+import "github.com/dgraph-io/badger/pb/pb.proto";
 import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 
 /* import "gogoproto/gogo.proto"; */
@@ -73,6 +73,7 @@ message Query {
 	int32 cache = 14;
 	int32 first = 15; // used to limit the number of result. Typically, the count is value of first
 	// field. Now, It's been used only for has query.
+	string attr_facet = 16; // set if user specified a facet along with the attr i.e. "name.since"
 }
 
 message ValueList {

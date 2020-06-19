@@ -46,6 +46,21 @@ func SortAndValidate(fs []*api.Facet) error {
 	return nil
 }
 
+// CopyFacet makes a copy of a single facet and returns the copy
+func CopyFacet(f *api.Facet, alias string) (fcopy *api.Facet) {
+	fcopy = &api.Facet{
+		Key:     f.Key,
+		Value:   nil,
+		ValType: f.ValType,
+	}
+	if alias != "" {
+		fcopy.Alias = alias
+	}
+	fcopy.Value = make([]byte, len(f.Value))
+	copy(fcopy.Value, f.Value)
+	return fcopy
+}
+
 // CopyFacets makes a copy of facets of the posting which are requested in param.Keys.
 func CopyFacets(fcs []*api.Facet, param *pb.FacetParams) (fs []*api.Facet) {
 	if param == nil || fcs == nil {
@@ -59,16 +74,11 @@ func CopyFacets(fcs []*api.Facet, param *pb.FacetParams) (fs []*api.Facet) {
 		f := fcs[fidx]
 		switch {
 		case param.AllKeys || param.Param[kidx].Key == f.Key:
-			fcopy := &api.Facet{
-				Key:     f.Key,
-				Value:   nil,
-				ValType: f.ValType,
-			}
+			alias := ""
 			if !param.AllKeys {
-				fcopy.Alias = param.Param[kidx].Alias
+				alias = param.Param[kidx].Alias
 			}
-			fcopy.Value = make([]byte, len(f.Value))
-			copy(fcopy.Value, f.Value)
+			fcopy := CopyFacet(f, alias)
 			fs = append(fs, fcopy)
 			kidx++
 			fidx++
